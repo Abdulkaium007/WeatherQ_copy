@@ -20,10 +20,8 @@ app.use(express.static(path.join(__dirname, "public")));
 // === CLIENT SCRIPT (inline) ===
 const clientScript = `
   <script>
-    // === PAGE DETECTION ===
     const isAddPage = window.location.pathname === "/add";
 
-    // === DOM ELEMENTS ===
     const slider = document.getElementById("weatherSlider");
     const dotsContainer = document.getElementById("tabDots");
     const cityInput = document.getElementById("cityInput");
@@ -34,15 +32,12 @@ const clientScript = `
     const loader = document.getElementById("loader");
     const refreshHint = document.getElementById("refreshHint");
 
-    // === STATE ===
     let weatherData = [];
     let isCelsius = localStorage.getItem("tempUnit") !== "F";
     let isDark = localStorage.getItem("darkMode") === "true";
-
-    // === SAVED CITIES (max 4) ===
     const savedCities = JSON.parse(localStorage.getItem("weatherq_cities")) || [];
+    let currentLocationData = null;
 
-    // === APPLY THEME ON LOAD ===
     document.body.classList.toggle("dark", isDark);
     if (themeToggle) {
       themeToggle.innerHTML = isDark
@@ -51,11 +46,9 @@ const clientScript = `
     }
     if (tempToggle) tempToggle.textContent = isCelsius ? "°C" : "°F";
 
-    // === SHOW/HIDE LOADER ===
     function showLoader() { if (loader) loader.style.display = "block"; }
     function hideLoader() { if (loader) loader.style.display = "none"; }
 
-    // === TOGGLE DARK MODE ===
     themeToggle?.addEventListener("click", () => {
       isDark = !isDark;
       localStorage.setItem("darkMode", isDark);
@@ -65,7 +58,6 @@ const clientScript = `
         : '<i class="fas fa-moon"></i>';
     });
 
-    // === TOGGLE °C / °F ===
     tempToggle?.addEventListener("click", () => {
       isCelsius = !isCelsius;
       localStorage.setItem("tempUnit", isCelsius ? "C" : "F");
@@ -73,7 +65,6 @@ const clientScript = `
       renderAll();
     });
 
-    // === FETCH WEATHER ===
     async function fetchWeather(lat, lon, isUser = false, city = null) {
       showLoader();
       const url = city
@@ -85,15 +76,18 @@ const clientScript = `
         const data = await res.json();
         if (data.error) throw new Error(data.error);
 
-        weatherData = weatherData.filter(d => d.city !== data.city);
-        isUser ? weatherData.unshift(data) : weatherData.push(data);
-
-        if (city && !savedCities.includes(city)) {
-          savedCities.push(city);
-          localStorage.setItem("weatherq_cities", JSON.stringify(savedCities.slice(0, 4)));
+        if (isUser) {
+          currentLocationData = data;
+        } else {
+          const exists = weatherData.find(d => d.city === data.city);
+          if (!exists) {
+            weatherData.push(data);
+            if (city && !savedCities.includes(city)) {
+              savedCities.push(city);
+              localStorage.setItem("weatherq_cities", JSON.stringify(savedCities.slice(0, 4)));
+            }
+          }
         }
-
-        weatherData = weatherData.slice(0, 5);
         renderAll();
       } catch (err) {
         alert(err.message);
@@ -102,32 +96,35 @@ const clientScript = `
       }
     }
 
-    // === LOAD SAVED CITIES ===
-    function loadSavedCities() {
-      savedCities.forEach(city => {
-        if (!weatherData.find(d => d.city === city)) {
-          fetchWeather(null, null, false, city);
-        }
-      });
+    function removeCity(cityName) {
+      weatherData = weatherData.filter(d => d.city !== cityName);
+      const idx = savedCities.indexOf(cityName);
+      if (idx > -1) {
+        savedCities.splice(idx, 1);
+        localStorage.setItem("weatherq_cities", JSON.stringify(savedCities));
+      }
+      renderAll();
     }
 
-    // === RENDER ALL ===
     function renderAll() {
-      isAddPage ? renderCityList() : renderSlider();
+      if (isAddPage) {
+        renderCityList();
+      } else {
+        renderSlider();
+      }
     }
 
-    // === RENDER SLIDER (PRESERVES ACTIVE CARD) ===
     function renderSlider() {
       if (!slider) return;
-
-      // Save current active index
       const activeCard = document.querySelector(".weather-card.active");
       const currentIndex = activeCard ? Array.from(slider.children).indexOf(activeCard) : 0;
 
       slider.innerHTML = "";
       dotsContainer.innerHTML = "";
 
-      weatherData.forEach((w, i) => {
+      const allData = currentLocationData ? [currentLocationData, ...weatherData] : weatherData;
+
+      allData.forEach((w, i) => {
         const card = document.createElement("div");
         card.className = "weather-card";
         if (i === currentIndex) card.classList.add("active");
@@ -145,31 +142,37 @@ const clientScript = `
       setActiveCard(currentIndex);
     }
 
-    // === RENDER CITY LIST ===
     function renderCityList() {
       if (!cityList) return;
-      cityList.innerHTML = weatherData.map((w, i) => \`
+
+      const allCities = [];
+      if (currentLocationData) {
+        allCities.push({ ...currentLocationData, isCurrent: true });
+      }
+      allCities.push(...weatherData);
+
+      if (allCities.length === 0) {
+        cityList.innerHTML = "<p>No cities added yet.</p>";
+        return;
+      }
+
+      cityList.innerHTML = allCities.map(w => \`
         <div class="city-card">
-          <h4>\${w.city}, \${w.country}</h4>
+          <h4>\${w.city}, \${w.country} \${w.isCurrent ? '<i class="fas fa-map-marker-alt"></i>' : ''}</h4>
           \${getProIcon(w.current.description, w.current.isNight)}
           <p>\${formatTemp(w.current.temp)}</p>
-          \${i !== 0 ? \`<button class="remove-btn" data-city="\${w.city}">X</button>\` : ''}
+          \${!w.isCurrent ? \`<button class="remove-btn" data-city="\${w.city}">X</button>\` : ''}
         </div>
-      \`).join("") || "<p>No cities added yet.</p>";
+      \`).join("");
 
       document.querySelectorAll(".remove-btn").forEach(btn => {
         btn.addEventListener("click", () => {
           const city = btn.dataset.city;
-          weatherData = weatherData.filter(d => d.city !== city);
-          const idx = savedCities.indexOf(city);
-          if (idx > -1) savedCities.splice(idx, 1);
-          localStorage.setItem("weatherq_cities", JSON.stringify(savedCities));
-          renderCityList();
+          removeCity(city);
         });
       });
     }
 
-    // === RENDER SINGLE CARD ===
     function renderWeatherCard(w, isCurrentLocation) {
       const temp = formatTemp(w.current.temp);
       const feels = formatTemp(w.current.feels_like);
@@ -196,13 +199,11 @@ const clientScript = `
       \`;
     }
 
-    // === FORMAT TEMP ===
     function formatTemp(temp) {
       const t = isCelsius ? temp.toFixed(1) : ((temp * 9 / 5) + 32).toFixed(1);
       return \`\${t}°\${isCelsius ? 'C' : 'F'}\`;
     }
 
-    // === SVG ICONS ===
     function getProIcon(description, isNight = false) {
       const desc = description.toLowerCase();
       const iconMap = {
@@ -228,7 +229,7 @@ const clientScript = `
         "few clouds": \`<svg viewBox="0 0 64 64"><circle cx="42" cy="28" r="12" fill="#FFD700"/><path d="M10 36 Q20 28, 30 36 T50 36 Q45 44, 35 42 Q25 44, 15 40 Z" fill="#E0E0E0"/><path d="M14 42 Q22 38, 30 42 T46 42 Q42 48, 34 47 Q26 48, 18 44 Z" fill="#B0BEC5"/></svg>\`,
         "scattered clouds": \`<svg viewBox="0 0 64 64"><path d="M15 32 Q22 26, 30 32 T46 32 Q42 38, 34 37 Q26 38, 18 34 Z" fill="#B0BEC5"/><path d="M20 40 Q26 36, 32 40 T44 40 Q40 45, 34 44 Q28 45, 22 42 Z" fill="#90A4AE"/></svg>\`,
         "overcast clouds": \`<svg viewBox="0 0 64 64"><path d="M10 36 Q25 24, 40 36 T54 36 Q50 46, 38 44 Q26 46, 14 42 Z" fill="#78909C"/></svg>\`,
-        "light lluvia": \`<svg viewBox="0 0 64 64"><path d="M15 32 Q23 26, 32 32 T48 32 Q44 38, 36 37 Q28 38, 20 34 Z" fill="#90A4AE"/><path d="M22 42 L21 48 M32 42 L31 48 M42 42 L41 48" stroke="#2979FF" stroke-width="2.5" fill="none"/></svg>\`,
+        "light rain": \`<svg viewBox="0 0 64 64"><path d="M15 32 Q23 26, 32 32 T48 32 Q44 38, 36 37 Q28 38, 20 34 Z" fill="#90A4AE"/><path d="M22 42 L21 48 M32 42 L31 48 M42 42 L41 48" stroke="#2979FF" stroke-width="2.5" fill="none"/></svg>\`,
         rain: \`<svg viewBox="0 0 64 64"><path d="M15 32 Q23 26, 32 32 T48 32 Q44 38, 36 37 Q28 38, 20 34 Z" fill="#90A4AE"/><path d="M18 42 L16 52 M26 42 L24 52 M34 42 L32 52 M42 42 L40 52" stroke="#2979FF" stroke-width="3" fill="none"/></svg>\`,
         thunderstorm: \`<svg viewBox="0 0 64 64"><path d="M14 34 Q22 28, 30 34 T46 34 Q42 40, 34 39 Q26 40, 18 36 Z" fill="#546E7A"/><path d="M24 40 L28 48 L26 48 L30 56 M36 42 L40 50 L38 50 L42 58" stroke="#FFD700" stroke-width="3" fill="none"/></svg>\`,
         snow: \`<svg viewBox="0 0 64 64"><path d="M15 32 Q23 26, 32 32 T48 32 Q44 38, 36 37 Q28 38, 20 34 Z" fill="#B0BEC5"/><circle cx="20" cy="42" r="3" fill="white"/><circle cx="32" cy="42" r="3" fill="white"/><circle cx="44" cy="42" r="3" fill="white"/><circle cx="26" cy="48" r="2.5" fill="white"/><circle cx="38" cy="48" r="2.5" fill="white"/></svg>\`,
@@ -238,13 +239,11 @@ const clientScript = `
       return \`<div class="pro-icon">\${icons[key] || icons.clear}</div>\`;
     }
 
-    // === SWITCH ACTIVE CARD ===
     function setActiveCard(index) {
       document.querySelectorAll(".weather-card").forEach((c, i) => c.classList.toggle("active", i === index));
       document.querySelectorAll(".dot").forEach((d, i) => d.classList.toggle("active", i === index));
     }
 
-    // === SEARCH CITY ===
     function addCityFromSearch() {
       const city = cityInput.value.trim();
       if (!city) return;
@@ -252,7 +251,6 @@ const clientScript = `
       cityInput.value = "";
     }
 
-    // === PULL TO REFRESH ===
     let startY = 0;
     document.addEventListener("touchstart", e => { startY = e.touches[0].clientY; }, { passive: true });
     document.addEventListener("touchmove", e => {
@@ -266,24 +264,28 @@ const clientScript = `
         location.reload();
       }
     });
-
     if (refreshHint) refreshHint.addEventListener("click", () => location.reload());
 
-    // === INITIAL LOAD ===
+    // INITIAL LOAD
     if (isAddPage) {
-      loadSavedCities();
+      // Load current location + saved cities
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          pos => fetchWeather(pos.coords.latitude, pos.coords.longitude, true),
+          () => console.log("Location denied")
+        );
+      }
+      savedCities.forEach(city => fetchWeather(null, null, false, city));
       searchBtn?.addEventListener("click", addCityFromSearch);
       cityInput?.addEventListener("keypress", e => e.key === "Enter" && addCityFromSearch());
     } else {
       if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
           pos => fetchWeather(pos.coords.latitude, pos.coords.longitude, true),
-          () => { hideLoader(); alert("Location access denied"); }
+          () => hideLoader()
         );
-      } else {
-        hideLoader();
       }
-      loadSavedCities();
+      savedCities.forEach(city => fetchWeather(null, null, false, city));
     }
   </script>
 `;
